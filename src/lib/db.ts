@@ -1,5 +1,6 @@
 import "server-only";
 import { promises as fs } from "fs";
+import os from "os";
 import path from "path";
 import bcrypt from "bcryptjs";
 import { nanoid } from "nanoid";
@@ -15,7 +16,13 @@ import type { DB } from "./types";
  * in repo.ts is the only surface the app uses, so the swap is localized.
  */
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// On serverless (Vercel) the project dir is read-only; only the OS temp dir is
+// writable. There the store is ephemeral (resets on cold start) — fine for a
+// demo. For real persistence swap in Postgres (see README).
+export const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+const DATA_DIR = IS_SERVERLESS
+  ? path.join(os.tmpdir(), "klassenbuch")
+  : path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
 function emptyDB(): DB {
@@ -57,8 +64,12 @@ async function persist(db: DB): Promise<void> {
   g.__kb_writing = prev
     .catch(() => {})
     .then(async () => {
-      await fs.mkdir(DATA_DIR, { recursive: true });
-      await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), "utf8");
+      try {
+        await fs.mkdir(DATA_DIR, { recursive: true });
+        await fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), "utf8");
+      } catch {
+        // Read-only FS (serverless): keep running from the in-memory copy.
+      }
     });
   return g.__kb_writing;
 }

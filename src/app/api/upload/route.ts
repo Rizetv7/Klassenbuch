@@ -3,6 +3,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { nanoid } from "nanoid";
 import { getCurrentUser } from "@/lib/session";
+import { IS_SERVERLESS } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -17,9 +18,10 @@ const EXT: Record<string, string> = {
 };
 
 /**
- * Saves uploaded images to /public/uploads (works locally).
- * For production on serverless (ephemeral FS), swap this for object storage
- * (e.g. Supabase Storage / Cloudflare R2) — only this handler changes.
+ * Locally: saves uploaded images to /public/uploads and returns their paths.
+ * On serverless (Vercel, read-only FS): returns inline data URLs so uploads
+ * still work without object storage — the image rides inside the record.
+ * For real production swap this for object storage (Supabase Storage / R2).
  */
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
@@ -30,15 +32,21 @@ export async function POST(req: NextRequest) {
   if (files.length === 0)
     return NextResponse.json({ error: "Keine Dateien" }, { status: 400 });
 
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
   const urls: string[] = [];
 
   for (const file of files) {
     if (!ALLOWED.includes(file.type)) continue;
     if (file.size > 12 * 1024 * 1024) continue; // 12MB cap
+    const buf = Buffer.from(await file.arrayBuffer());
+
+    if (IS_SERVERLESS) {
+      urls.push(`data:${file.type};base64,${buf.toString("base64")}`);
+      continue;
+    }
+
+    await fs.mkdir(UPLOAD_DIR, { recursive: true });
     const ext = EXT[file.type] ?? "bin";
     const name = `${Date.now()}-${nanoid(8)}.${ext}`;
-    const buf = Buffer.from(await file.arrayBuffer());
     await fs.writeFile(path.join(UPLOAD_DIR, name), buf);
     urls.push(`/uploads/${name}`);
   }
